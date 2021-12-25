@@ -14,9 +14,6 @@ end
 # ╔═╡ 0dacf572-9356-4808-92cb-e80b55fbe706
 using Flux
 
-# ╔═╡ 688f5564-dcd5-44c2-a51a-de65cca8c8a3
-using Random
-
 # ╔═╡ d9fa951c-5228-4d7b-bca8-529235547e62
 using GeometricFlux
 
@@ -25,6 +22,12 @@ using MultivariateStats  # for pca
 
 # ╔═╡ 3a63f8e5-fffa-452b-945f-0054999cd4e6
 using Plots
+
+# ╔═╡ 37c632e0-c6f0-47a9-9d26-1f851e7962f3
+using LinearAlgebra
+
+# ╔═╡ 0848fa91-ecc6-46d2-bb88-29e6bf8d5cd5
+using PlutoUI
 
 # ╔═╡ 66f63b94-6f57-4829-9bc9-0d86fe3197e7
 md"""
@@ -207,10 +210,25 @@ md"""
 
 # ╔═╡ 235e9ccc-8d72-43b2-a16f-b787ae36df67
 function sample_negative_edges(G, num_neg_samples)
-	pos_edge_list = graph_to_edge_list(G)
-	to_sample = randperm(length(pos_edge_list))
+	samples = []
 	
-	pos_edge_list[1:num_neg_samples]
+	while length(samples) < num_neg_samples
+		i, j = rand(1:nv(G), 2)
+		if i > j
+			i, j = j, i
+		end
+		if i == j
+			continue
+		end
+		
+		if [i,j] in pos_edge_list
+			continue
+		end
+		
+		push!(samples, [i,j])
+	end
+	
+	samples
 end
 
 # ╔═╡ b2c7aecb-3333-4f50-8f1d-050976db5aed
@@ -284,6 +302,8 @@ function create_node_emb(;num_node=34, embedding_dim=16)
 end
 
 # ╔═╡ 524caf90-c82e-49b6-a2d4-ea188dcd42d7
+# one need to run this cell again to create a new embedding
+# which will be used in the later embedding training
 begin
 	emb = create_node_emb()
 	ids = [1, 4]  # one-based index
@@ -325,6 +345,19 @@ md"""
 
 # ╔═╡ 17f4e5cc-7118-497d-8388-7b40228ee8de
 begin
+	function predict(emb, edge; σ=σ)
+		i, j = edge
+		e_i, e_j = emb(i), emb(j)
+		
+		σ(dot(e_i, e_j))
+	end
+	
+	function predict_all(emb, edge_matrix)
+		map(1:size(edge_matrix, 2)) do c
+			predict(emb, edge_matrix[:,c])
+		end
+	end
+	
 	function accuracy(pred, label)
 		success = map(pred, label) do p, l
 			p = p>0.5 ? 1 : 0
@@ -334,18 +367,60 @@ begin
 		round(success / length(pred), digits=4)
 	end
 	
-	function train(emb, loss_fn, sigmoid, train_label, train_edge; epochs=500, lr=0.1)
+	function train(emb, loss_fn, σ, train_label, train_edge; epochs=500, lr=0.01)
 		opt = Descent(lr)
-		dataloader = Flux.DataLoader(train_edge, train_label)
 		
-		for _ in 1:epochs
+		# the dataloader for training
+		dataloader = Flux.DataLoader((train_edge, train_label))
+		
+		# the loss function used in training
+		loss(x, y) = loss_fn(predict(emb, x), y)
+		
+		# get accuracy and losses 
+		evaluate() = begin
+			predictions = map(1:length(train_label)) do c
+				predict(emb, train_edge[:,c]; σ=σ)
+			end
+
+			acc = accuracy(predictions, train_label)
+			losses = loss_fn(predictions, train_label)
+
+			acc, losses
+		end
+		
+		# training step
+		for ep in 1:epochs
 			p = params(emb)
-			Flux.Optimise.train!(loss_fn, p, dataloader, opt)
+			Flux.Optimise.train!(loss, p, dataloader, opt)
+			
+			# log each epoch
+			acc, losses = evaluate()
+			println("epoch: $ep, acc: ", acc, ", loss: ", losses)
 		end
 	end
 	
 	nothing
 end
+
+# ╔═╡ 210b8ecb-6520-43fb-94bc-8513ab8e1d74
+begin
+	loss_fn = Flux.Losses.binarycrossentropy
+	
+	# positive and negative labels
+	pos_label = ones(size(pos_edge_index, 2))
+	neg_label = zeros(size(neg_edge_index, 2))
+	
+	train_label = [pos_label..., neg_label...]
+	train_edge = hcat(pos_edge_index, neg_edge_index)	
+end
+
+# ╔═╡ 1ef35fd6-c4b0-47fa-ad9a-f039152b4021
+with_terminal() do 
+	train(emb, loss_fn, sigmoid, train_label, train_edge)
+end
+
+# ╔═╡ 15da28ed-2a9f-49d8-83b9-6cf1354cbca1
+visualize_emb(emb)
 
 # ╔═╡ 00000000-0000-0000-0000-000000000001
 PLUTO_PROJECT_TOML_CONTENTS = """
@@ -354,9 +429,10 @@ Flux = "587475ba-b771-5e3f-ad9e-33799f191a9c"
 GeometricFlux = "7e08b658-56d3-11e9-2997-919d5b31e4ea"
 GraphPlot = "a2cc645c-3eea-5389-862e-a155d0052231"
 Graphs = "86223c79-3864-5bf0-83f7-82e725a168b6"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 MultivariateStats = "6f286f6a-111f-5878-ab1e-185364afe411"
 Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
-Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+PlutoUI = "7f904dfe-b85e-4ff6-b463-dae2292396a8"
 
 [compat]
 Flux = "~0.12.8"
@@ -365,6 +441,7 @@ GraphPlot = "~0.5.0"
 Graphs = "~1.4.1"
 MultivariateStats = "~0.8.0"
 Plots = "~1.25.3"
+PlutoUI = "~0.7.23"
 """
 
 # ╔═╡ 00000000-0000-0000-0000-000000000002
@@ -376,6 +453,12 @@ deps = ["LinearAlgebra"]
 git-tree-sha1 = "485ee0867925449198280d4af84bdb46a2a404d0"
 uuid = "621f4979-c628-5d54-868e-fcf4e3e8185c"
 version = "1.0.1"
+
+[[AbstractPlutoDingetjes]]
+deps = ["Pkg"]
+git-tree-sha1 = "8eaf9f1b4921132a4cff3f36a1d9ba923b14a481"
+uuid = "6e696c72-6542-2067-7265-42206c756150"
+version = "1.1.4"
 
 [[AbstractTrees]]
 git-tree-sha1 = "03e0550477d86222521d254b741d470ba17ea0b5"
@@ -817,6 +900,23 @@ git-tree-sha1 = "129acf094d168394e80ee1dc4bc06ec835e510a3"
 uuid = "2e76f6c2-a576-52d4-95c1-20adfe4de566"
 version = "2.8.1+1"
 
+[[Hyperscript]]
+deps = ["Test"]
+git-tree-sha1 = "8d511d5b81240fc8e6802386302675bdf47737b9"
+uuid = "47d2ed2b-36de-50cf-bf87-49c2cf4b8b91"
+version = "0.0.4"
+
+[[HypertextLiteral]]
+git-tree-sha1 = "2b078b5a615c6c0396c77810d92ee8c6f470d238"
+uuid = "ac1192a8-f4b3-4bfe-ba22-af5b92cd3ab2"
+version = "0.9.3"
+
+[[IOCapture]]
+deps = ["Logging", "Random"]
+git-tree-sha1 = "f7be53659ab06ddc986428d3a9dcc95f6fa6705a"
+uuid = "b5f81e59-6552-4d32-b1f0-c071b021bf89"
+version = "0.2.2"
+
 [[IRTools]]
 deps = ["InteractiveUtils", "MacroTools", "Test"]
 git-tree-sha1 = "006127162a51f0effbdfaab5ac0c83f8eb7ea8f3"
@@ -1176,6 +1276,12 @@ deps = ["Base64", "Contour", "Dates", "Downloads", "FFMPEG", "FixedPointNumbers"
 git-tree-sha1 = "7eda8e2a61e35b7f553172ef3d9eaa5e4e76d92e"
 uuid = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
 version = "1.25.3"
+
+[[PlutoUI]]
+deps = ["AbstractPlutoDingetjes", "Base64", "Dates", "Hyperscript", "HypertextLiteral", "IOCapture", "InteractiveUtils", "JSON", "Logging", "Markdown", "Random", "Reexport", "UUIDs"]
+git-tree-sha1 = "5152abbdab6488d5eec6a01029ca6697dff4ec8f"
+uuid = "7f904dfe-b85e-4ff6-b463-dae2292396a8"
+version = "0.7.23"
 
 [[PooledArrays]]
 deps = ["DataAPI", "Future"]
@@ -1672,7 +1778,6 @@ version = "0.9.1+5"
 # ╠═718ca581-a7c3-4273-9da4-79fd9511c121
 # ╟─2b37e68c-31be-477c-b5f6-a70c337fa223
 # ╟─e5b370d6-ee1d-4a22-a23e-75a542c96380
-# ╠═688f5564-dcd5-44c2-a51a-de65cca8c8a3
 # ╠═235e9ccc-8d72-43b2-a16f-b787ae36df67
 # ╠═b2c7aecb-3333-4f50-8f1d-050976db5aed
 # ╠═eb21c7dc-fc28-456d-ab71-65ecf69563de
@@ -1691,6 +1796,11 @@ version = "0.9.1+5"
 # ╠═9893d717-0208-44c1-81df-ac63958b7b07
 # ╠═ed084bc0-e0c2-49bb-bce2-cf348e7aaa76
 # ╟─c063a8bd-cd21-4d83-ba50-e58d8e823f2f
+# ╠═37c632e0-c6f0-47a9-9d26-1f851e7962f3
+# ╠═0848fa91-ecc6-46d2-bb88-29e6bf8d5cd5
 # ╠═17f4e5cc-7118-497d-8388-7b40228ee8de
+# ╠═210b8ecb-6520-43fb-94bc-8513ab8e1d74
+# ╠═1ef35fd6-c4b0-47fa-ad9a-f039152b4021
+# ╠═15da28ed-2a9f-49d8-83b9-6cf1354cbca1
 # ╟─00000000-0000-0000-0000-000000000001
 # ╟─00000000-0000-0000-0000-000000000002
